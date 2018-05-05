@@ -1,3 +1,0 @@
-﻿  filter_packet.cpp
-c:\users\tuanna2\source\repos\filter_packet\filter_packet\filter_packet.cpp(72): warning C4101: 's_mac': unreferenced local variable
-  filter_packet.vcxproj -> C:\Users\TuanNA2\source\repos\filter_packet\Debug\filter_packet.exe
