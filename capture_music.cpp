@@ -1,4 +1,4 @@
-#include "filter_packet.h"
+#include "capture_music.h"
 #include "common_macro.h"
 
 #define OUTPUT_DIR "C:\\Users\\TuanNA2\\Desktop\\tmp\\capture.mp3"
@@ -6,10 +6,12 @@
 #define DUMP_FILE "C:\\Users\\TuanNA2\\Desktop\\tmp\\packet.pcap"
 
 FILE *fout;
-const char *file_name[] = { "sample.mp3", "sample2.mp3", "sample3.mp3" };
-int file_name_index = 0;
+//const char *file_name[] = { "sample.mp3", "sample2.mp3", "sample3.mp3" };
+//int file_name_index = 0;
 unsigned long next_seq_number = 0;
 unsigned int size = 0;
+PQUEUE packet_queue;
+using namespace std;
 
 int main(char argc, char **argv) {
 
@@ -22,7 +24,7 @@ int main(char argc, char **argv) {
 	pcap_t *adhandle;
 	struct pcap_pkthdr *header;
 	const u_char *pkt_data;
-	int timeout_mili = 1000;
+	int timeout_mili = 10;
 	pcap_dumper_t *dumpfile;
 
 	/*Thread variable*/
@@ -49,21 +51,11 @@ int main(char argc, char **argv) {
 	for (i = 0, choosed_if = network_interfaces; i < choose - 1; i++, choosed_if = choosed_if->next);
 
 
-	if ((adhandle = pcap_open(choosed_if->name, 65536, PCAP_OPENFLAG_PROMISCUOUS
+	if ((adhandle = pcap_open(choosed_if->name, 65536, PCAP_OPENFLAG_MAX_RESPONSIVENESS
 		, timeout_mili, NULL, err_buf)) == NULL) {
 		printf("Can't open adapter\n");
 		return -1;
 	}
-
-	/* Open the dump file */
-	dumpfile = pcap_dump_open(adhandle, DUMP_FILE);
-
-	if (dumpfile == NULL)
-	{
-		fprintf(stderr, "\nError opening output file\n");
-		return -1;
-	}
-	printf("listening.......\n");
 
 	if (choosed_if->addresses != NULL) {
 		netmask = ((struct sockaddr_in *)(choosed_if->addresses->netmask))->sin_addr.S_un.S_addr;
@@ -83,107 +75,128 @@ int main(char argc, char **argv) {
 		pcap_freealldevs(network_interfaces);
 		return -1;
 	}
+	
+	printf("listening.......\n");
+
+	/* Open the dump file */
+	remove(OUTPUT_DIR);
+	remove(DUMP_FILE);
+	dumpfile = pcap_dump_open(adhandle, DUMP_FILE);
+
+	if (dumpfile == NULL)
+	{
+		fprintf(stderr, "\nError opening output file\n");
+		return -1;
+	}
 
 	pcap_freealldevs(network_interfaces);
 	int res;
-	//hThread = CreateThread(NULL, 0, MyThreadFunction, NULL, 0, 0);
-	//pcap_dispatch(adhandle, 0, apacket_handler, NULL);
-	/*while ((res = pcap_next_ex(adhandle, &header, &pkt_data)) >= 0) {
-	if (res == 0) {
-	continue;
+	packet_queue = createQueue(8192);
+	if (packet_queue == nullptr) {
+		fprintf(stderr, "\nCant create queue for incoming packet\n");
+		return -1;
 	}
-
-	pcap_dump((u_char *)dumpfile, header, pkt_data);
-
-	}*/
-	//while (true);
-	remove(OUTPUT_DIR);
-	remove(DUMP_FILE);
+	hThread = CreateThread(NULL, 0, MyThreadFunction, NULL, 0, 0);
+	//pcap_dispatch(adhandle, 0, apacket_handler, NULL);
 	fout = fopen(OUTPUT_DIR, "ab");
-	pcap_loop(adhandle, 0, apacket_handler, NULL);
+
+	while ((res = pcap_next_ex(adhandle, &header, &pkt_data)) >= 0) {
+		if (res == 0) {
+			//printf("timeout ...\n");
+			continue;
+		}
+
+		u_char *copy_pkt_data = (u_char*)malloc(sizeof(char) * header->caplen);
+		memcpy(copy_pkt_data, pkt_data, sizeof(char) * header->caplen);
+		enqueue(packet_queue, copy_pkt_data, header->caplen);
+		pcap_dump((u_char *)dumpfile, header, pkt_data);
+
+	}
+	//while (true);
+	
+	////while (true) {
+	//	pcap_dispatch(adhandle, 0, apacket_handler, (u_char*)dumpfile);
+	//	WaitForMultipleObjects(1, &hThread, TRUE, INFINITE);
+	////}
+	
 	getchar();
 	return 1;
 }
 
-void apacket_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data) {
-	ETHER_HDR eth_header;
-	IPV4_HDR ip_header;
-	TCP_HDR tcp_header;
-	UCHAR s_mac[6];
-	memcpy(&eth_header, pkt_data, sizeof(ETHER_HDR));
-	memcpy(&ip_header, pkt_data + sizeof(ETHER_HDR), sizeof(IPV4_HDR));
-	memcpy(&tcp_header, pkt_data + sizeof(ETHER_HDR) + sizeof(IPV4_HDR), sizeof(TCP_HDR));
+void create_queue() {
+	packet_queue = (PQUEUE)malloc(sizeof(QUEUE));
+	packet_queue->front = 0;
+	packet_queue->rear = 0;
+	packet_queue->size = 0;
+}
 
-	//printf("Selected device has mac address : %.2X-%.2X-%.2X-%.2X-%.2X-%.2X", s_mac[0], s_mac[1], s_mac[2], s_mac[3], s_mac[4], s_mac[5]);
-	char ip_src[INET_ADDRSTRLEN], ip_dst[INET_ADDRSTRLEN];
-	inet_ntop(AF_INET, &(ip_header.ip_srcaddr), ip_src, INET_ADDRSTRLEN);
-	inet_ntop(AF_INET, &(ip_header.ip_destaddr), ip_dst, INET_ADDRSTRLEN);
+void apacket_handler(u_char *dumpfile, const struct pcap_pkthdr *header, const u_char *pkt_data) {
+	pcap_dump(dumpfile, header, pkt_data);
+	u_char *copy_pkt_data = (u_char*)malloc(sizeof(char) * header->caplen);
+	memcpy(copy_pkt_data, pkt_data, sizeof(char) * header->caplen);
+	enqueue(packet_queue, copy_pkt_data, header->caplen);
 
-	//printf("%s -> %s\n", ip_src, ip_dst);
-	//printf("%d\n", tcp_header.data_offset);
-
-	int datasize = header->caplen - sizeof(ETHER_HDR) - ip_header.ip_header_len * 4 - tcp_header.data_offset * 4;
-
-	//memcpy(data, pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
-	//print_data((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
-	// packet nay co chua data file mp3
-	if (little_to_big_endian(tcp_header.sequence) == next_seq_number) {
-		//if (datasize == 1460){
-		if (tcp_header.fin) {
-			printf("Doneee\n");
-			next_seq_number = 0;
-		}
-		else {
-			save_music_data_to_file((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
-			next_seq_number += datasize;
-			//printf("Append to file\n");
-			printf("\nSEQ: %u - next seq number: %u", little_to_big_endian(tcp_header.sequence), next_seq_number);
-		}
-
-	}
-
-	if (is_mp3_packet((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize)) {
-		next_seq_number = datasize + htonl(tcp_header.sequence);
-
-		printf("\nSeq: %x - next_seq: %ud ", htonl(tcp_header.sequence), next_seq_number);
-	}
 }
 
 DWORD WINAPI MyThreadFunction(LPVOID lpParam) {
-	pcap_t *fp;
-	char errbuf[PCAP_ERRBUF_SIZE];
-	char source[PCAP_BUF_SIZE];
+	printf("Thread running.....");
+	while (true) {
+		ETHER_HDR eth_header;
+		IPV4_HDR ip_header;
+		TCP_HDR tcp_header;
+		Pqueue_Entry queue_entry = dequeue(packet_queue);
+		/*Check dequeue*/
+		if (queue_entry == nullptr)
+			continue;
+		u_char *pkt_data = queue_entry->data;
 
+		
 
-	/* Create the source string according to the new WinPcap syntax */
-	if (pcap_createsrcstr(source,         // variable that will keep the source string
-		PCAP_SRC_FILE,  // we want to open a file
-		NULL,           // remote host
-		NULL,           // port on the remote host
-		DUMP_FILE,        // name of the file we want to open
-		errbuf          // error buffer
-	) != 0)
-	{
-		fprintf(stdout, "\nError creating a source string\n");
-		return -1;
+		memcpy(&eth_header, pkt_data, sizeof(ETHER_HDR));
+		memcpy(&ip_header, pkt_data + sizeof(ETHER_HDR), sizeof(IPV4_HDR));
+		memcpy(&tcp_header, pkt_data + sizeof(ETHER_HDR) + sizeof(IPV4_HDR), sizeof(TCP_HDR));
+
+		/*char ip_src[INET_ADDRSTRLEN], ip_dst[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &(ip_header.ip_srcaddr), ip_src, INET_ADDRSTRLEN);
+		inet_ntop(AF_INET, &(ip_header.ip_destaddr), ip_dst, INET_ADDRSTRLEN);*/
+
+		//printf("%s -> %s\n", ip_src, ip_dst);
+		//printf("%d\n", tcp_header.data_offset);
+
+		int datasize = queue_entry->pkt_size - sizeof(ETHER_HDR) - ip_header.ip_header_len * 4 - tcp_header.data_offset * 4;
+		//int datasize = 1460;
+		//memcpy(data, pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
+		//print_data((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
+		// packet nay co chua data file mp3
+		if (little_to_big_endian(tcp_header.sequence) == next_seq_number) {
+			//if (datasize == 1460){
+			if (tcp_header.fin) {
+				printf("\nReceive doneee\n");
+				next_seq_number = 0;
+				fclose(fout);
+			}
+			else {
+				save_music_data_to_file((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize);
+				next_seq_number += datasize;
+				//printf("Append to file\n");
+				printf("\nSEQ: %u - next seq number: %u - current queue size: %d", little_to_big_endian(tcp_header.sequence), next_seq_number, packet_queue->size);
+			}
+
+		}
+		else {
+			if (is_mp3_packet((const char*)pkt_data + sizeof(ETHER_HDR) + ip_header.ip_header_len * 4 + tcp_header.data_offset * 4, datasize)) {
+				next_seq_number = datasize + htonl(tcp_header.sequence);
+
+				printf("\nSeq: %x - next_seq: %ud ", htonl(tcp_header.sequence), next_seq_number);
+			}
+		}
+
+		/*Clean mem*/
+		free(pkt_data);
+		free(queue_entry);
 	}
-
-	/* Open the capture file */
-	if ((fp = pcap_open(source,         // name of the device
-		65536,          // portion of the packet to capture
-						// 65536 guarantees that the whole packet will be captured on all the link layers
-		PCAP_OPENFLAG_PROMISCUOUS,     // promiscuous mode
-		1000,              // read timeout
-		NULL,              // authentication on the remote machine
-		errbuf         // error buffer
-	)) == NULL)
-	{
-		fprintf(stdout, "\nUnable to open the file %s.\n", source);
-		return -1;
-	}
-
-	// read and dispatch packets until EOF is reached
-	pcap_loop(fp, 0, apacket_handler, NULL);
+	return 1;
+	
 }
 
 int is_mp3_packet(const char *data, int datasize) {
@@ -213,23 +226,6 @@ void save_music_data_to_file(const char *data, int datasize) {
 	printf("Len data %d", datasize);
 	fwrite(data, sizeof(char), datasize, fout);
 	//fclose(fout);
-}
-
-void save_data_to_log(const u_char *pkt_data, int datasize) {
-	fout = fopen(LOG_DIR, "ab");
-
-	//printf("Len data %d", datasize);
-	IPV4_HDR *ih = (IPV4_HDR *)(pkt_data + 14); //length of ethernet header
-	fprintf(fout, "%u -> %u len %d\n",
-		ih->ip_srcaddr,
-		ih->ip_destaddr,
-		datasize
-	);
-	fclose(fout);
-	if (ih->ip_srcaddr == 1698212032) {
-		size += datasize;
-		printf("\n curr_size: %u", size);
-	}
 }
 
 void append_data_to_file(const char *data, int datasize, char *output) {
